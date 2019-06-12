@@ -158,7 +158,7 @@ class Stimulus:
 			if test_tasks:
 				task_num = np.random.choice(par['test_task_list'])
 			else:
-				task_num = np.random.choice(par['training_task_list'])
+				task_num = np.random.choice(par['train_task_list'])
 
 			current_task = self.task_types[task_num]
 			current_task[0](*current_task[1:])

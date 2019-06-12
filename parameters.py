@@ -15,6 +15,7 @@ par = {
 	'save_fn'				: '80_tasks_v0',
 	'train'					: True,
 	'save_weights'			: True,
+	'load_weights'			: False,
 	'learning_method'		: 'RL', # 'RL' or 'SL'
 	'LSTM_init'				: 0.02,
 	'w_init'				: 0.02,
@@ -30,18 +31,7 @@ par = {
 	'n_val'					: 1,
 	'top_down'				: True,
 	'use_striatum'			: True,
-	'feed_sparse'			: False,
 
-	# Encoder configuration
-	'n_latent'				: 200,
-	'n_task_latent'			: 5,
-
-
-	# read/write configuration
-	'A_alpha_init'			: 0.99995,
-	'A_beta_init'			: 1.5,
-	'inner_steps'			: 1,
-	'batch_norm_inner'		: False,
 
 	# Timings and rates
 	'learning_rate'			: 1e-3,
@@ -60,10 +50,10 @@ par = {
 	'mask_duration'			: 0,
 	'dead_time'				: 100,
 	'dt'					: 100,
-	'trials_per_seq'		: 40,
+	'trials_per_seq'		: 5,
 	'train_task_list'		: [a for a in range(1,61)],
 	'test_task_list'		: [0],
-	'dead_trials'			: 10,
+	'dead_trials'			: 2,
 
 	# RL parameters
 	'fix_break_penalty'     : -1.,
@@ -166,13 +156,6 @@ def update_dependencies():
 	# Set trial step length
 	par['num_time_steps'] = par['trial_length']//par['dt']
 
-	# Set up standard LSTM weights and biases
-
-	par['sparsity_matrix'] = np.ones((par['n_latent'], par['n_latent']), dtype=np.float32)-np.eye(par['n_latent'], dtype=np.float32)
-
-
-	#if par['load_encoder']:
-	#	load_encoder_weights()
 
 update_dependencies()
 print('--> Parameters successfully loaded.\n')

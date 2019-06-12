@@ -89,8 +89,8 @@ class Model:
 		lstm_output = tf.zeros([par['batch_size'], par['n_lstm_out']], dtype = tf.float32)
 
 		# striatal weights, H1 and H2 are associated with positive and negative RPEs, respectively
-		self.H1  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
-		self.H2  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
+		self.H1  = tf.zeros([par['batch_size'], par['n_hidden'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
+		self.H2  = tf.zeros([par['batch_size'], par['n_hidden'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
 		self.Hf1 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
 		self.Hf2 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
 
@@ -107,7 +107,8 @@ class Model:
 				stim = mask * self.stimulus_data[t]
 
 				if par['use_striatum']:
-					striatal_input  = tf.concat([stim, lstm_output], axis = 1)
+					#striatal_input  = tf.concat([stim, lstm_output], axis = 1)
+					striatal_input  = tf.concat([stim, h], axis = 1)
 					striatal_output = self.read_striatum(striatal_input)
 					striatal_output = tf.stop_gradient(striatal_output)
 				else:
@@ -119,8 +120,8 @@ class Model:
 				h = tf.layers.dropout(h, rate = par['drop_rate'], training = True)
 
 				# inetermediate projection between lstm and striatum
-				lstm_output = tf.nn.relu(self.multiply(h, par['n_lstm_out'], 'Wl') + \
-					self.add_bias(par['n_lstm_out'], 'bl'))
+				#lstm_output = tf.nn.relu(self.multiply(h, par['n_lstm_out'], 'Wl') + \
+				#	self.add_bias(par['n_lstm_out'], 'bl'))
 
 				pol_out = self.multiply(h, par['n_output'], 'W_pol') + self.add_bias(par['n_output'], 'b_pol')
 				val_out = self.multiply(h, 1, 'W_val') + self.add_bias(1, 'b_val')
@@ -144,7 +145,8 @@ class Model:
 
 				if par['use_striatum']:
 					# needs fixing
-					self.write_striatum(mask*y, action, reward_matrix)
+					pass
+					#self.write_striatum(mask*y, action, reward_matrix)
 
 				self.reward_full.append(reward)
 
@@ -191,17 +193,18 @@ class Model:
 
 		# h1 and h2 are associated with positive and negative RPEs, respectively
 
-		h1 = striatal_input @ self.H1
-		top_k, _ = tf.nn.top_k(h1, k = par['striatum_top_k'])
-		h1 = tf.where(h1 >= top_k[:,-par['striatum_top_k']-1:-par['striatum_top_k']], h1, tf.zeros(h1.shape))
-		#h1 = tf.where(h1 >= top_k[:,0:1], h1, tf.zeros(h1.shape))
 
-		h2 = striatal_input @ self.H2
-		top_k, _ = tf.nn.top_k(h2, k = par['striatum_top_k'])
-		h2 = tf.where(h2 >= top_k[:,-par['striatum_top_k']-1:-par['striatum_top_k']], h2, tf.zeros(h2.shape))
+		h1 = tf.einsum('bi,bij->bj', striatal_input, self.H1)
+		top_k, _ = tf.nn.top_k(h1, k = par['striatum_top_k']+1)
+		h1 = tf.where(h1 >= top_k[:,-2:-1], h1, tf.zeros(h1.shape))
 
-		a1 = h1 @ self.Hf1
-		a2 = h2 @ self.Hf2
+
+		h2 = tf.einsum('bi,bij->bj', striatal_input, self.H2)
+		top_k, _ = tf.nn.top_k(h2, k = par['striatum_top_k']+1)
+		h2 = tf.where(h2 >= top_k[:,-2:-1], h2, tf.zeros(h2.shape))
+
+		a1 = tf.einsum('bi,bij->bj', h1, self.Hf1)
+		a2 = tf.einsum('bi,bij->bj', h2, self.Hf2)
 
 		return tf.concat([a1, a2], axis = 1)
 
@@ -320,7 +323,7 @@ def main(gpu_id=None):
 			_, reward, pol_loss, action, h, mask  = \
 				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask], \
 				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],m:trial_info['train_mask']})
-			results_dict['reward_list'].append(reshape_reward(reward_novel))
+			results_dict['reward_list'].append(reshape_reward(reward))
 
 			if i%100 == 0:
 
@@ -346,8 +349,8 @@ def reshape_reward(reward):
 def print_key_params():
 
 	key_params = ['n_hidden', 'use_striatum',  'learning_rate', 'discount_rate', 'drop_rate',\
-		'entropy_cost', 'val_cost', 'trials_per_seq', 'dead_trials','batch_size','training_task_list',\
-		'est_task_list', 'grad_clip_val']
+		'entropy_cost', 'val_cost', 'trials_per_seq', 'dead_trials','batch_size','train_task_list',\
+		'test_task_list', 'grad_clip_val']
 
 	print('Key Parameters:\n'+'-'*60)
 	for k in key_params:
