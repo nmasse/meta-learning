@@ -36,12 +36,8 @@ class Model:
 		self.time_mask		= mask
 
 		self.var_dict = {}
-		with tf.variable_scope('network', reuse=tf.AUTO_REUSE):
-			self.var_dict['h_init'] = tf.get_variable('h_init', shape = [1, par['n_hidden']], \
-				initializer = tf.random_uniform_initializer(-0.02, 0.02))
+		self.prev_weights = pickle.load(open(par['saved_weights_fn'],'rb')) if par['load_weights'] else None
 
-		#self.prev_weights = None
-		self.prev_weights = pickle.load(open('./saved_encoder_weights_80tasks.pkl','rb'))
 		self.run_model()
 		self.run_A_model()
 		self.optimize()
@@ -49,11 +45,10 @@ class Model:
 		print('Graph successfully defined.')
 
 
-
-	def multiply(self, x, n_out, name, scope = 'network', train=True, load_prev=False):
+	def multiply(self, x, n_out, name, scope = 'network', train=True):
 
 		with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-			if not load_prev:
+			if not par['load_weights']:
 				#self.var_dict[name] = tf.get_variable(name, shape = [x.shape[1], n_out], \
 				#	initializer = tf.variance_scaling_initializer(scale = 2.), trainable=train)
 				self.var_dict[name] = tf.get_variable(name, shape = [x.shape[1], n_out], \
@@ -62,10 +57,10 @@ class Model:
 				self.var_dict[name] = tf.get_variable(name, initializer = self.prev_weights[name], trainable=train)
 		return x @ self.var_dict[name]
 
-	def add_bias(self, n_out, name, scope = 'network', train=True, load_prev=False):
+	def add_bias(self, n_out, name, scope = 'network', train=True):
 
 		with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-			if not load_prev:
+			if not par['load_weights']:
 				if name == 'bf' and False:
 					self.var_dict[name] = tf.get_variable(name, initializer = 3.*np.ones((1,n_out),dtype=np.float32), trainable=train)
 				else:
@@ -90,19 +85,19 @@ class Model:
 		self.reward_full = []
 		self.mask    = []
 
-		#h = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
-		h = self.var_dict['h_init']
+		# lstm output and internal state
+		h = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
+		c = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
+
+		# lstm output that will project into striatum
+		lstm_output = tf.zeros([par['batch_size'], par['n_lstm_out']], dtype = tf.float32)
+
 		h_read = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
 		h_write = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
-		c = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
-		#A = tf.zeros([par['batch_size'], par['n_hidden'], par['n_hidden']], dtype = tf.float32)
-		self.A = tf.zeros([par['batch_size'], par['n_latent'], par['n_output'], par['num_reward_types']], dtype = tf.float32)
-		self.A_final = tf.Variable(np.zeros([par['batch_size'], par['n_latent'], par['n_output'], par['num_reward_types']], dtype = np.float32), \
-			name = 'A', trainable = False)
+
 		reward = tf.zeros([par['batch_size'], par['n_val']])
 		action = tf.zeros((par['batch_size'], par['n_output']))
 		reward_matrix 	= tf.zeros([par['batch_size'], par['num_reward_types']])
-
 
 		for i in range(par['trials_per_seq']):
 			mask   = tf.ones([par['batch_size'], 1])
@@ -110,43 +105,33 @@ class Model:
 			for j in range(par['num_time_steps']):
 
 				t = i*par['num_time_steps'] + j
-				stim = self.stimulus_data[t]
-				y = tf.nn.relu(self.multiply(stim, par['n_latent'], 'W0', scope='ff', train=par['train_encoder'],load_prev=par['load_encoder']) \
-						+ self.add_bias(par['n_latent'], 'b0', scope='ff', train=par['train_encoder'],load_prev=par['load_encoder']))
+				stim = mask * self.stimulus_data[t]
 
-				#top_k, _ = tf.nn.top_k(y, k = 11)
-				#top_cond = y >= top_k[:,-2:-1]
-				#y = tf.where(top_cond, tf.ones(y.shape), tf.zeros(y.shape))
-
-				stim_hat = self.multiply(y,par['n_input'],'W1', scope='ff', train=par['train_encoder'],load_prev=par['load_encoder'])
-
-				if par['l2l']:
-					h_read = tf.zeros([par['batch_size'], 1])
+				if par['use_striatum']:
+					striatal_input  = tf.concat([stim, lstm_output], axis = 1)
+					striatal_output = self.read_striatum(striatal_input)
+					striatal_output = tf.stop_gradient(striatal_output)
 				else:
-					h_read = self.read_fast_weights(mask*y)
-					h_read = tf.stop_gradient(h_read)
+					striatal_output = tf.zeros([par['batch_size'], 1])
 
-				#h, c = self.cortex_lstm(mask*self.stimulus_data[t], h, h_read, c)
-				#lstm_input = tf.concat([h_read, action, reward_matrix, self.cue[t,:,:]], axis = 1)
-				lstm_input = tf.concat([h_read, mask*action, mask*reward_matrix], axis = 1)
-				#lstm_input = tf.concat([action, reward_matrix], axis = 1)
-				if par['feed_sparse']:
-					h, c = self.cortex_lstm(mask*y, h, lstm_input, c)
-				else:
-					h, c = self.cortex_lstm(mask*stim, h, lstm_input, c)
 
+				lstm_input = tf.concat([stim, striatal_output, mask*action, mask*reward_matrix], axis = 1)
+				h, c = self.run_lstm(lstm_input, h, c)
 				h = tf.layers.dropout(h, rate = par['drop_rate'], training = True)
 
-				load_prev = False
-				pol_out = self.multiply(h, par['n_output'], 'W_pol',load_prev=load_prev) + self.add_bias(par['n_output'], 'b_pol',load_prev=load_prev)
-				val_out = self.multiply(h, 1, 'W_val',load_prev=load_prev) + self.add_bias(1, 'b_val',load_prev=load_prev)
+				lstm_output = tf.nn.relu(self.multiply(h, par['n_lstm_out'], 'Wl') + \
+					self.add_bias(par['n_lstm_out'], 'bl'))
+
+				pol_out = self.multiply(h, par['n_output'], 'W_pol') + self.add_bias(par['n_output'], 'b_pol')
+				val_out = self.multiply(h, 1, 'W_val') + self.add_bias(1, 'b_val')
 
 				# Compute outputs for action and policy loss
 				action_index	= tf.multinomial(pol_out, 1)
 				action 			= tf.one_hot(tf.squeeze(action_index), par['n_output'])
 				pol_out			= tf.nn.softmax(pol_out, -1) # Note softmax for entropy calculation
 
-				# Check for trial continuation (ends if previous reward is non-zero)
+				# Check for trial continuation
+				# ends if previous reward is non-zero, restarts every new trial in sequence
 				if j == 0:
 					continue_trial = tf.ones([par['batch_size'], 1])
 				else:
@@ -157,7 +142,7 @@ class Model:
 				reward_matrix	= tf.reduce_sum(action[...,tf.newaxis]*self.reward_matrix[t,...], axis=-2, keep_dims=False) \
 									* mask * self.time_mask[t,:,tf.newaxis]
 
-				if not par['l2l']:
+				if par['use_striatum']:
 					self.write_fast_weights(mask*y, action, reward_matrix)
 
 				self.reward_full.append(reward)
@@ -165,24 +150,14 @@ class Model:
 				# Record outputs
 				if i >= par['dead_trials']:
 					self.h.append(h)
-					self.y.append(y)
-					self.stim.append(stim)
-					self.stim_hat.append(stim_hat)
-					#self.h_write.append(h_write)
-					#self.c.append(c)
 					self.pol_out.append(pol_out)
 					self.val_out.append(val_out)
 					self.action.append(action)
 					self.reward.append(reward)
-					#self.target.append(self.target_out[t, ...])
 					self.mask.append(mask * self.time_mask[t,:,tf.newaxis])
 
 		self.h = tf.stack(self.h, axis=0)
-		self.y = tf.stack(self.y, axis=0)
 		self.stim = tf.stack(self.stim, axis=0)
-		self.stim_hat = tf.stack(self.stim_hat, axis=0)
-		#self.h_write = tf.stack(self.h_write, axis=0)
-		#self.c = tf.stack(self.c, axis=0)
 		self.pol_out = tf.stack(self.pol_out, axis=0)
 		self.val_out = tf.stack(self.val_out, axis=0)
 		self.action = tf.stack(self.action, axis=0)
@@ -191,7 +166,7 @@ class Model:
 		self.mask = tf.stack(self.mask, axis=0)
 
 
-	def cortex_lstm(self, x, h, h_read, c):
+	def run_lstm(self, x, h, h_read, c):
 		""" Compute LSTM state from inputs and vars...
 				f : forgetting gate
 				i : input gate
@@ -201,27 +176,14 @@ class Model:
 
 		# Iterate LSTM
 		N = par['n_hidden']
-		load_prev = False
-		f = tf.sigmoid(self.multiply(x, N, 'Wf',load_prev=load_prev) + self.multiply(h, N, 'Uf',load_prev=load_prev) \
-			+ self.multiply(h_read, N, 'Vf',load_prev=load_prev) + self.add_bias(N,'bf',load_prev=load_prev))
+		f = tf.sigmoid(self.multiply(x, N, 'Wf') + self.multiply(h, N, 'Uf') + self.add_bias(N,'bf'))
+		i = tf.sigmoid(self.multiply(x, N, 'Wi') + self.multiply(h, N, 'Ui') + self.add_bias(N,'bi'))
+		o = tf.sigmoid(self.multiply(x, N, 'Wo') + self.multiply(h, N, 'Uo')  + self.add_bias(N,'bo'))
+		cn = tf.tanh(self.multiply(x, N, 'Wc') + self.multiply(h, N, 'Uc') + self.add_bias(N,'bc'))
 
-		i = tf.sigmoid(self.multiply(x, N, 'Wi',load_prev=load_prev) + self.multiply(h, N, 'Ui',load_prev=load_prev) \
-			+ self.multiply(h_read, N, 'Vi',load_prev=load_prev) + self.add_bias(N,'bi',load_prev=load_prev))
-
-		o = tf.sigmoid(self.multiply(x, N, 'Wo',load_prev=load_prev) + self.multiply(h, N, 'Uo',load_prev=load_prev) \
-			+ self.multiply(h_read, N, 'Vo',load_prev=load_prev) + self.add_bias(N,'bo',load_prev=load_prev))
-
-		cn = tf.tanh(self.multiply(x, N, 'Wc',load_prev=load_prev) + self.multiply(h, N, 'Uc',load_prev=load_prev) \
-			+ self.multiply(h_read, N, 'Vc',load_prev=load_prev) + self.add_bias(N,'bc',load_prev=load_prev))
-
-		#f  = tf.sigmoid(x @ self.var_dict['Wf'] + h @ self.var_dict['Uf'] + h_read @ self.var_dict['Vf'] + self.var_dict['bf'])
-		#i  = tf.sigmoid(x @ self.var_dict['Wi'] + h @ self.var_dict['Ui'] + h_read @ self.var_dict['Vi'] + self.var_dict['bi'])
-		#o  = tf.sigmoid(x @ self.var_dict['Wo'] + h @ self.var_dict['Uo'] + h_read @ self.var_dict['Vo'] + self.var_dict['bo'])
-		#cn = tf.tanh(x @ self.var_dict['Wc'] + h @ self.var_dict['Uc'] + h_read @ self.var_dict['Vc'] + self.var_dict['bc'])
 		c  = f * c + i * cn
 		h  = o * tf.tanh(c)
 
-		# Return action, hidden state, and cell state
 		return h, c
 
 	def read_fast_weights(self, h):
@@ -276,10 +238,7 @@ class Model:
 		# Set up optimizer and required constants
 		epsilon = 1e-6
 		network_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='network')
-		ff_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='ff')
-		task_ff_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='task_ff')
 		opt = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
-
 
 		# Get the value outputs of the network, and pad the last time step
 		val_out = tf.concat([self.val_out, tf.zeros([1,par['batch_size'],par['n_val']])], axis=0)
@@ -297,9 +256,6 @@ class Model:
 		mask_static      = tf.stop_gradient(self.mask)
 		pred_val_static  = tf.stop_gradient(pred_val)
 
-		# Multiply masks together
-		full_mask        = mask_static#*self.time_mask#*par['sequence_mask']
-
 		# Policy loss
 		self.pol_loss = -tf.reduce_mean(mask_static*advantage_static*action_static*tf.log(epsilon + self.pol_out))
 
@@ -312,43 +268,12 @@ class Model:
 		# Collect RL losses
 		loss = self.pol_loss + self.val_loss - self.ent_loss
 
-		train_ops = []
-
 		RL_grads_vars = opt.compute_gradients(loss, var_list = network_vars)
 		capped_gvs = []
 		for grad, var in RL_grads_vars:
 			capped_gvs.append((tf.clip_by_value(grad, -par['grad_clip_val'], par['grad_clip_val']), var))
 
-		train_ops.append(opt.apply_gradients(capped_gvs))
-
-		#train_ops.append(opt.minimize(loss, var_list = network_vars))
-
-		y = tf.reshape(self.y, [-1, par['n_latent']])
-		self.reconstruction_loss = tf.reduce_mean(tf.square(self.stim - self.stim_hat))
-		self.weight_loss = tf.reduce_mean(tf.abs(self.var_dict['W0'])) + tf.reduce_mean(tf.abs(self.var_dict['W1']))
-		self.sparsity_loss = tf.reduce_mean(tf.transpose(y) @ y)
-		ff_loss = self.reconstruction_loss + par['sparsity_cost']*self.sparsity_loss \
-			+ par['weight_cost']*self.weight_loss
-
-		if par['train_encoder']:
-			train_ops.append(opt.minimize(ff_loss, var_list = ff_vars))
-
-		train_ops.append(tf.assign(self.A_final, self.A))
-
-		self.train = tf.group(*train_ops)
-
-		y = tf.reshape(self.task_hidden, [-1, par['n_task_latent']])
-		self.task_reconstruction_loss = tf.reduce_mean(tf.square(self.task_latent - self.task_latent_hat))
-		self.task_weight_loss = tf.reduce_mean(tf.abs(self.var_dict['Wt0'])) + tf.reduce_mean(tf.abs(self.var_dict['Wt1']))
-		mask = np.ones((par['n_task_latent'],par['n_task_latent']),dtype=np.float32) - np.eye(par['n_task_latent'],dtype=np.float32)
-		M = tf.constant(mask)
-		#self.task_sparsity_loss = tf.reduce_mean(M*(tf.transpose(y) @ y))
-		self.task_sparsity_loss = tf.reduce_mean((tf.transpose(y) @ y))
-		task_loss = self.task_reconstruction_loss + par['sparsity_cost']*self.task_sparsity_loss \
-			+ par['weight_cost']*self.task_weight_loss
-		self.train_task_latent = opt.minimize(task_loss, var_list = task_ff_vars)
-
-
+		self.train = opt.apply_gradients(capped_gvs)
 
 
 def main(gpu_id=None):
@@ -368,7 +293,7 @@ def main(gpu_id=None):
 
 	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.45)# if gpu_id == '0' else tf.GPUOptions()
 
-	results_dict = {'A_hist': [], 'reward_list': [], 'task_latent':[], 'task_latent_hat':[], 'task_hidden':[], 'novel_reward_list':[]}
+	results_dict = {'reward_list': [], 'novel_reward_list':[]}
 	t0 = time.time()
 
 	with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
@@ -382,10 +307,10 @@ def main(gpu_id=None):
 
 		for i in range(par['n_iters']):
 
-			name, trial_info = stim.generate_trial()
+			name, trial_info = stim.generate_trial(novel_tasks = False)
 
-			_, reward, pol_loss, action, h, mask, y  = \
-				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask, model.y], \
+			_, reward, pol_loss, action, h, mask  = \
+				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask], \
 				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],\
 				rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
 
@@ -395,28 +320,20 @@ def main(gpu_id=None):
 
 			if i%100 == 0:
 
-				name, trial_info = stim.generate_trial(fixed_task_num=0)
-				reward0 = sess.run(model.reward_full, feed_dict={x:trial_info['neural_input'], \
+				name, trial_info = stim.generate_trial(novel_tasks = True)
+				reward_novel = sess.run(model.reward_full, feed_dict={x:trial_info['neural_input'], \
 					r:trial_info['reward_data'],rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
-				rw0 = np.reshape(reward0, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
+				rw0 = np.reshape(reward_novel, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
 				rw0 = np.sum(rw0, axis = 0)
 				results_dict['novel_reward_list'].append(rw0)
 
+				print('Iter {:>4} | Reward: {:6.3f} | Reward novel: {:6.3f} | Pol. Loss: {:6.3f}'.format(\
+					i, np.mean(np.sum(reward, axis=0)), np.mean(np.sum(reward_novel, axis=0)),pol_loss))
 
-				print('Training Iter {:>4} | Reward: {:6.3f} | Pol. Loss: {:6.3f} | Mean h: {:6.3f} | y>0: {:6.3f}'.format(\
-					i, np.mean(np.sum(reward, axis=0)), pol_loss, np.mean(h), np.mean(y>0)))
-
-
-				print('Time ', time.time() -t0, ' Testing Iter {:>4} | Reward: {:6.3f} '.format(i, np.mean(np.sum(reward0, axis=0))))
-				t0 = time.time()
 				weights = sess.run(model.var_dict)
-				pickle.dump(results_dict, open('./results_hist_60tasks_fast_v1.pkl','wb'))
-				#pickle.dump(weights, open('./saved_weights_l2rl.pkl','wb'))
-				pickle.dump(weights, open('./saved_weights_60tasks_fast_v1.pkl','wb'))
+				results = {'weights': weights, 'results_dict': results_dict}
+				pickle.dump(results, open(par['save_fn'],'wb'))
 
-
-
-	print('Model complete.\n')
 
 def print_key_params():
 

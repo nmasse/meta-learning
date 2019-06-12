@@ -24,6 +24,7 @@ par = {
 	'num_fix_tuned'			: 1,
 	'num_rule_tuned'		: 0,
 	'n_hidden'				: 256,
+	'n_lstm_out'			: 64,
 	'n_val'					: 1,
 	'top_down'				: True,
 	'l2l'					: True,
