@@ -75,25 +75,6 @@ class Model:
 		return self.var_dict[name]
 
 
-	def run_A_model(self):
-
-		#self.A = tf.zeros([par['batch_size'], par['n_latent'], par['n_output'], par['num_reward_types']], dtype = tf.float32)
-
-		#self.task_latent = tf.stop_gradient(tf.reshape(tf.sign(self.A_final), [par['batch_size'], -1]))
-		self.task_latent = tf.stop_gradient(tf.reshape(tf.sign(self.A_final), [par['batch_size'], -1]))
-
-		self.task_hidden = tf.nn.relu(self.multiply(self.task_latent, par['n_task_latent'], 'Wt0', scope='task_ff')# \
-			+ self.add_bias(par['n_task_latent'], 'bt0', scope='task_ff'))
-		#self.task_latent_hat = self.multiply(self.task_hidden, par['n_latent']*par['n_output']*par['num_reward_types'],'Wt1', scope='task_ff')# \
-		#	+ self.add_bias(par['n_latent']*par['n_output']*par['num_reward_types'], 'bt1', scope='task_ff')
-
-		#self.task_hidden = tf.nn.relu(self.multiply(self.task_latent, par['n_task_latent'], 'Wt0', scope='task_ff'))
-		self.task_latent_hat = tf.nn.relu(self.multiply(self.task_hidden, par['n_latent']*par['n_output']*par['num_reward_types'],'Wt1', scope='task_ff'))
-		#self.task_latent_hat = tf.nn.relu(self.multiply(self.task_hidden, par['n_latent']*par['n_output']*1,'Wt1', scope='task_ff'))
-
-		print(self.task_latent, self.task_latent_hat)
-
-
 	def run_model(self):
 
 		self.h = []
@@ -126,14 +107,9 @@ class Model:
 		for i in range(par['trials_per_seq']):
 			mask   = tf.ones([par['batch_size'], 1])
 
-
 			for j in range(par['num_time_steps']):
 
-				# Make two possible actions and values for the network to pursue
-				# by way of the LSTM-based cortex module and the associative
-				# network hippocampus module
 				t = i*par['num_time_steps'] + j
-				#stim = tf.cast(self.stimulus_data[t] > par['tuning_height']-0.01, tf.float32)
 				stim = self.stimulus_data[t]
 				y = tf.nn.relu(self.multiply(stim, par['n_latent'], 'W0', scope='ff', train=par['train_encoder'],load_prev=par['load_encoder']) \
 						+ self.add_bias(par['n_latent'], 'b0', scope='ff', train=par['train_encoder'],load_prev=par['load_encoder']))
@@ -160,10 +136,7 @@ class Model:
 					h, c = self.cortex_lstm(mask*stim, h, lstm_input, c)
 
 				h = tf.layers.dropout(h, rate = par['drop_rate'], training = True)
-				#h += tf.random.normal(h.shape, 0, par['noise_rnn'])
 
-				#h_read, h_write, A = self.fast_weights(h, A)
-				#h_read *= 0
 				load_prev = False
 				pol_out = self.multiply(h, par['n_output'], 'W_pol',load_prev=load_prev) + self.add_bias(par['n_output'], 'b_pol',load_prev=load_prev)
 				val_out = self.multiply(h, 1, 'W_val',load_prev=load_prev) + self.add_bias(1, 'b_val',load_prev=load_prev)
@@ -266,14 +239,9 @@ class Model:
 
 		self.A = self.A + tf.einsum('im,ijk->ijkm', r, tf.einsum('ij,ik->ijk', h, a))
 
-	def write_fast_weights_v2(self, h, a, r):
 
-		s = tf.concat([h, par['action_multiplier']*a], axis = 1)
-
-		s0 = self.multiply(s, par['n_output'], 'W_striatum',load_prev=load_prev) # + self.add_bias(par['n_output'], 'b_pol',load_prev=load_prev)
-
-
-	def read_H_weights(self, H, h):
+	def read_hopfield_weights(self, H, h):
+		# currently not in use
 
 		h_hat = tf.zeros_like(h)
 		alpha = 0.5
@@ -286,7 +254,8 @@ class Model:
 		return pred_action
 
 
-	def write_H_weights(self, H, h):
+	def write_hopfield_weights(self, H, h):
+		# currently not in use
 
 		hh = tf.einsum('ij,ik->ijk',h,h)
 
@@ -311,8 +280,6 @@ class Model:
 		task_ff_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='task_ff')
 		opt = tf.train.AdamOptimizer(learning_rate=par['learning_rate'])
 
-		# Correct time mask shape
-		#self.time_mask = self.time_mask[...,tf.newaxis]
 
 		# Get the value outputs of the network, and pad the last time step
 		val_out = tf.concat([self.val_out, tf.zeros([1,par['batch_size'],par['n_val']])], axis=0)
@@ -345,7 +312,6 @@ class Model:
 		# Collect RL losses
 		loss = self.pol_loss + self.val_loss - self.ent_loss
 
-
 		train_ops = []
 
 		RL_grads_vars = opt.compute_gradients(loss, var_list = network_vars)
@@ -371,9 +337,6 @@ class Model:
 
 		self.train = tf.group(*train_ops)
 
-
-
-		print('self.task_hidden', self.task_hidden)
 		y = tf.reshape(self.task_hidden, [-1, par['n_task_latent']])
 		self.task_reconstruction_loss = tf.reduce_mean(tf.square(self.task_latent - self.task_latent_hat))
 		self.task_weight_loss = tf.reduce_mean(tf.abs(self.var_dict['Wt0'])) + tf.reduce_mean(tf.abs(self.var_dict['Wt1']))
@@ -384,7 +347,6 @@ class Model:
 		task_loss = self.task_reconstruction_loss + par['sparsity_cost']*self.task_sparsity_loss \
 			+ par['weight_cost']*self.task_weight_loss
 		self.train_task_latent = opt.minimize(task_loss, var_list = task_ff_vars)
-
 
 
 
@@ -401,11 +363,6 @@ def main(gpu_id=None):
 	r = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_output']], 'reward')
 	rm = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_output'], par['num_reward_types']], 'reward_matrix')
 	m = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size']], 'mask')
-	#c = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], 2], 'cue')
-
-	#cue = np.zeros((par['num_time_steps']*par['trials_per_seq'], par['batch_size'], 2), dtype=np.float32)
-	#cue[:par['num_time_steps']*par['dead_trials'], :, 0] = 1.
-	#cue[par['num_time_steps']*par['dead_trials']:, :, 1] = 1.
 
 	stim = stimulus_sequence.Stimulus()
 
@@ -423,55 +380,21 @@ def main(gpu_id=None):
 		sess.run(tf.global_variables_initializer())
 		reward_list = []
 
-		print('\nGate value of 0 indicates using hippocampus (associative network).')
-		print('Gate value of 1 indicates using cortex (LSTM).\n')
-
 		for i in range(par['n_iters']):
 
-			if i%100 == 0:
-				name, trial_info = stim.generate_trial(fixed_task_num=None,task_sequence = True)
-			else:
-				name, trial_info = stim.generate_trial(fixed_task_num=None,task_sequence = False)
-			#trial_info['train_mask'][:par['dead_trials']*par['num_time_steps'], :] = 0.
-
+			name, trial_info = stim.generate_trial()
 
 			_, reward, pol_loss, action, h, mask, y  = \
 				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask, model.y], \
 				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],\
 				rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
 
-
-			""""
-			A = sess.run(model.A_final)
-			for _ in range(80000):
-				_, t_recon, t_sparsity, task_latent, task_latent_hat, task_hidden  = \
-					sess.run([model.train_task_latent, model.task_reconstruction_loss, model.task_sparsity_loss, model.task_latent, \
-					model.task_latent_hat, model.task_hidden])
-			"""
-
 			rw = np.reshape(reward, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
 			rw = np.sum(rw, axis = 0)
 			results_dict['reward_list'].append(rw)
 
 			if i%100 == 0:
-				"""
-				results_dict['A_hist'].append(A)
-				results_dict['task_latent'].append(task_latent)
-				results_dict['task_latent_hat'].append(task_latent_hat)
-				results_dict['task_hidden'].append(task_hidden)
 
-				if len(results_dict['A_hist']) > 30:
-					results_dict['A_hist'] = results_dict['A_hist'][1:]
-					results_dict['task_latent'] = results_dict['task_latent'][1:]
-					results_dict['task_latent_hat'] = results_dict['task_latent_hat'][1:]
-					results_dict['task_hidden'] = results_dict['task_hidden'][1:]
-				"""
-
-
-				"""
-				#print('Training Iter {:>4} | Reward: {:6.3f} | Pol. Loss: {:6.3f} | Mean h: {:6.3f} | y>0: {:6.3f} | task rl: {:6.3f} | task spars: {:6.3f}  '.format(\
-				#	i, np.mean(np.sum(reward, axis=0)), pol_loss, np.mean(h), np.mean(y>0), 1000.*t_recon, 1000.*t_sparsity ))
-				"""
 				name, trial_info = stim.generate_trial(fixed_task_num=0)
 				reward0 = sess.run(model.reward_full, feed_dict={x:trial_info['neural_input'], \
 					r:trial_info['reward_data'],rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
@@ -484,16 +407,12 @@ def main(gpu_id=None):
 					i, np.mean(np.sum(reward, axis=0)), pol_loss, np.mean(h), np.mean(y>0)))
 
 
-
 				print('Time ', time.time() -t0, ' Testing Iter {:>4} | Reward: {:6.3f} '.format(i, np.mean(np.sum(reward0, axis=0))))
 				t0 = time.time()
 				weights = sess.run(model.var_dict)
 				pickle.dump(results_dict, open('./results_hist_60tasks_fast_v1.pkl','wb'))
 				#pickle.dump(weights, open('./saved_weights_l2rl.pkl','wb'))
 				pickle.dump(weights, open('./saved_weights_60tasks_fast_v1.pkl','wb'))
-
-
-
 
 
 

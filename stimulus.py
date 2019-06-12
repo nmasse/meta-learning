@@ -135,7 +135,7 @@ class Stimulus:
 			]
 
 
-	def generate_trial(self, fixed_task_num = None, task_sequence = False):
+	def generate_trial(self, fixed_task_num = None):
 
 		# Create blank trial info
 		self.trial_info = {
@@ -156,10 +156,7 @@ class Stimulus:
 		for self.trial_num in range(par['batch_size']):
 
 			if fixed_task_num is None:
-				if not task_sequence:
-					task_num = np.random.choice(par['task_list'])
-				else:
-					task_num = int(self.trial_num/3) + 1
+				task_num = np.random.choice(par['task_list'])
 			else:
 				task_num = fixed_task_num
 			#print('task num ', task_num, self.task_types[task_num][1])
