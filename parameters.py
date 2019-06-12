@@ -25,6 +25,8 @@ par = {
 	'num_rule_tuned'		: 0,
 	'n_hidden'				: 256,
 	'n_lstm_out'			: 64,
+	'n_striatum'			: 256,
+	'striatum_top_k'		: 1,
 	'n_val'					: 1,
 	'top_down'				: True,
 	'l2l'					: True,
@@ -60,7 +62,8 @@ par = {
 	'dead_time'				: 100,
 	'dt'					: 100,
 	'trials_per_seq'		: 40,
-	'task_list'				: [a for a in range(1,61)], #[a for a in range(49)],
+	'train_task_list'		: [a for a in range(1,61)],
+	'test_task_list'		: [0],
 	'dead_trials'			: 10,
 
 	# RL parameters

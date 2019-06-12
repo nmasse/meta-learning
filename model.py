@@ -92,8 +92,11 @@ class Model:
 		# lstm output that will project into striatum
 		lstm_output = tf.zeros([par['batch_size'], par['n_lstm_out']], dtype = tf.float32)
 
-		h_read = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
-		h_write = tf.zeros([par['batch_size'], par['n_hidden']], dtype = tf.float32)
+		# striatal weights
+		self.H1  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
+		self.H2  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
+		self.Hf1 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
+		self.Hf2 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
 
 		reward = tf.zeros([par['batch_size'], par['n_val']])
 		action = tf.zeros((par['batch_size'], par['n_output']))
@@ -143,7 +146,7 @@ class Model:
 									* mask * self.time_mask[t,:,tf.newaxis]
 
 				if par['use_striatum']:
-					self.write_fast_weights(mask*y, action, reward_matrix)
+					self.write_striatum(mask*y, action, reward_matrix)
 
 				self.reward_full.append(reward)
 
@@ -166,7 +169,7 @@ class Model:
 		self.mask = tf.stack(self.mask, axis=0)
 
 
-	def run_lstm(self, x, h, h_read, c):
+	def run_lstm(self, x, h, c):
 		""" Compute LSTM state from inputs and vars...
 				f : forgetting gate
 				i : input gate
@@ -186,18 +189,27 @@ class Model:
 
 		return h, c
 
-	def read_fast_weights(self, h):
+	def read_striatum(self, striatal_input):
 
-		# can we think of h as a probability over states?
-		value_probe = tf.einsum('ijkm,ij->ikm', self.A, h)
-		return tf.sign(tf.reshape(value_probe, [par['batch_size'], par['n_output']*par['num_reward_types']]))
+		# h1 and h2 are associated with positive and negative RPEs, respectively
 
-		#value_probe = tf.reshape(value_probe, [par['batch_size'], par['n_output']*par['num_reward_types']])
-		#value_probe /= (1e-6 + tf.reduce_sum(value_probe,axis = 1, keepdims=True))
-		#return value_probe
+		h1 = striatal_input @ self.H1
+		top_k, _ = tf.nn.top_k(h1, k = par['striatum_top_k'])
+		h1 = tf.where(h1 >= top_k[:,-par['striatum_top_k']-1:-par['striatum_top_k']], h1, tf.zeros(h1.shape))
+
+		h2 = striatal_input @ self.H2
+		top_k, _ = tf.nn.top_k(h2, k = par['striatum_top_k'])
+		h2 = tf.where(h2 >= top_k[:,-par['striatum_top_k']-1:-par['striatum_top_k']], h2, tf.zeros(h2.shape))
+
+		a1 = h1 @ self.Hf1
+		a2 = h2 @ self.Hf2
+
+		return tf.concat([a1, a2], axis = 1)
 
 
-	def write_fast_weights(self, h, a, r):
+	def write_striatum(self, h, a, r):
+
+		# NEEDS MAJOR UPDATE!!!!
 
 		self.A = self.A + tf.einsum('im,ijk->ijkm', r, tf.einsum('ij,ik->ijk', h, a))
 
@@ -268,9 +280,9 @@ class Model:
 		# Collect RL losses
 		loss = self.pol_loss + self.val_loss - self.ent_loss
 
-		RL_grads_vars = opt.compute_gradients(loss, var_list = network_vars)
+		grads_vars = opt.compute_gradients(loss, var_list = network_vars)
 		capped_gvs = []
-		for grad, var in RL_grads_vars:
+		for grad, var in grads_vars:
 			capped_gvs.append((tf.clip_by_value(grad, -par['grad_clip_val'], par['grad_clip_val']), var))
 
 		self.train = opt.apply_gradients(capped_gvs)
@@ -307,25 +319,19 @@ def main(gpu_id=None):
 
 		for i in range(par['n_iters']):
 
-			name, trial_info = stim.generate_trial(novel_tasks = False)
-
+			name, trial_info = stim.generate_trial(test_tasks = False)
 			_, reward, pol_loss, action, h, mask  = \
 				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask], \
 				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],\
 				rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
-
-			rw = np.reshape(reward, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
-			rw = np.sum(rw, axis = 0)
-			results_dict['reward_list'].append(rw)
+			results_dict['reward_list'].append(reshape_reward(reward_novel))
 
 			if i%100 == 0:
 
-				name, trial_info = stim.generate_trial(novel_tasks = True)
+				name, trial_info = stim.generate_trial(test_tasks = True)
 				reward_novel = sess.run(model.reward_full, feed_dict={x:trial_info['neural_input'], \
 					r:trial_info['reward_data'],rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
-				rw0 = np.reshape(reward_novel, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
-				rw0 = np.sum(rw0, axis = 0)
-				results_dict['novel_reward_list'].append(rw0)
+				results_dict['novel_reward_list'].append(reshape_reward(reward_novel))
 
 				print('Iter {:>4} | Reward: {:6.3f} | Reward novel: {:6.3f} | Pol. Loss: {:6.3f}'.format(\
 					i, np.mean(np.sum(reward, axis=0)), np.mean(np.sum(reward_novel, axis=0)),pol_loss))
@@ -334,6 +340,12 @@ def main(gpu_id=None):
 				results = {'weights': weights, 'results_dict': results_dict}
 				pickle.dump(results, open(par['save_fn'],'wb'))
 
+
+def reshape_reward(reward):
+
+	reward = np.reshape(reward, (par['num_time_steps'], par['trials_per_seq'], par['batch_size']),order='F')
+	reward = np.sum(reward, axis = 0)
+	return reward
 
 def print_key_params():
 

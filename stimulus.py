@@ -135,7 +135,7 @@ class Stimulus:
 			]
 
 
-	def generate_trial(self, fixed_task_num = None):
+	def generate_trial(self, test_tasks = False):
 
 		# Create blank trial info
 		self.trial_info = {
@@ -155,16 +155,15 @@ class Stimulus:
 		# Apply reinforcement learning task specifications
 		for self.trial_num in range(par['batch_size']):
 
-			if fixed_task_num is None:
-				task_num = np.random.choice(par['task_list'])
+			if test_tasks:
+				task_num = np.random.choice(par['test_task_list'])
 			else:
-				task_num = fixed_task_num
-			#print('task num ', task_num, self.task_types[task_num][1])
+				task_num = np.random.choice(par['training_task_list'])
+
 			current_task = self.task_types[task_num]
 			current_task[0](*current_task[1:])
 
 			resp_vect = np.sum(self.trial_info['desired_output'][:,self.trial_num,:-1], axis=1)
-
 
 			for b in range(par['trials_per_seq']):
 
@@ -261,9 +260,6 @@ class Stimulus:
 			else:
 				target_ind = int(np.round(par['num_motion_dirs']*(stim_dir+offset)/(2*np.pi))%par['num_motion_dirs'])
 
-			#print(b, stim_dir, stim_index, stimulus_category_one, target_ind)
-			#print('stim_dir', stim_dir)
-
 			self.trial_info['neural_input'][t0+stim_onset[b]:t0+stim_off, self.trial_num, neuron_ind] += np.reshape(self.circ_tuning(stim_dir),(1,-1))
 			self.trial_info['desired_output'][t0+resp_onset[b]:t1, self.trial_num, target_ind] = 1
 			self.trial_info['desired_output'][t0:t0+resp_onset[b], self.trial_num, -1] = 1
@@ -326,7 +322,6 @@ class Stimulus:
 			raise Exception('Bad task variant.')
 
 		resp_dirs = np.int8(np.round(par['num_motion_dirs']*(resp_dirs+offset)/(2*np.pi))%par['num_motion_dirs'])
-
 
 		resp = np.zeros([par['num_motion_dirs'], par['trials_per_seq']])
 		for b in range(par['trials_per_seq']):
