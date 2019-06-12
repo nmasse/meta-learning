@@ -88,14 +88,15 @@ class Model:
 		# lstm output that will project into striatum
 		lstm_output = tf.zeros([par['batch_size'], par['n_lstm_out']], dtype = tf.float32)
 
-		# striatal weights, H1 and H2 are associated with positive and negative RPEs, respectively
-		self.H1  = tf.zeros([par['batch_size'], par['n_hidden'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
-		self.H2  = tf.zeros([par['batch_size'], par['n_hidden'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
-		self.Hf1 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
-		self.Hf2 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
 
-		reward = tf.zeros([par['batch_size'], par['n_val']])
-		action = tf.zeros((par['batch_size'], par['n_output']))
+		self.Hs1 = tf.zeros([par['batch_size'], par['n_striatum_in'], par['n_striatum']], dtype = tf.float32)
+		self.Hs2 = tf.zeros([par['batch_size'], par['n_striatum_in'], par['n_striatum']], dtype = tf.float32)
+		self.Ha1 = tf.zeros([par['batch_size'], par['n_output'], par['n_striatum']], dtype = tf.float32)
+		self.Ha2 = tf.zeros([par['batch_size'], par['n_output'], par['n_striatum']], dtype = tf.float32)
+
+		reward 			= tf.zeros([par['batch_size'], par['n_val']])
+		val_out_prev	= tf.zeros([par['batch_size'], par['n_val']])
+		action 			= tf.zeros((par['batch_size'], par['n_output']))
 		reward_matrix 	= tf.zeros([par['batch_size'], par['num_reward_types']])
 
 		for i in range(par['trials_per_seq']):
@@ -108,8 +109,15 @@ class Model:
 
 				if par['use_striatum']:
 					#striatal_input  = tf.concat([stim, lstm_output], axis = 1)
-					striatal_input  = tf.concat([stim, h], axis = 1)
-					striatal_output = self.read_striatum(striatal_input)
+					if par['striatum_input'] == 'stim_and_state':
+						state           = tf.concat([stim, h], axis = 1)
+					elif par['striatum_input'] == 'state_only':
+						state           = h
+					elif par['striatum_input'] == 'stim_only':
+						state           = stim
+						
+					state			/= tf.sqrt(1e-9 + tf.reduce_sum(state**2, axis = 1, keepdims = True))
+					striatal_output = self.read_striatum_loop(state)
 					striatal_output = tf.stop_gradient(striatal_output)
 				else:
 					striatal_output = tf.zeros([par['batch_size'], 1])
@@ -118,10 +126,6 @@ class Model:
 				lstm_input = tf.concat([stim, striatal_output, mask*action, mask*reward_matrix], axis = 1)
 				h, c = self.run_lstm(lstm_input, h, c)
 				h = tf.layers.dropout(h, rate = par['drop_rate'], training = True)
-
-				# inetermediate projection between lstm and striatum
-				#lstm_output = tf.nn.relu(self.multiply(h, par['n_lstm_out'], 'Wl') + \
-				#	self.add_bias(par['n_lstm_out'], 'bl'))
 
 				pol_out = self.multiply(h, par['n_output'], 'W_pol') + self.add_bias(par['n_output'], 'b_pol')
 				val_out = self.multiply(h, 1, 'W_val') + self.add_bias(1, 'b_val')
@@ -142,13 +146,12 @@ class Model:
 				reward			= tf.reduce_sum(action*self.reward_data[t,...], axis=-1, keep_dims=True) \
 									* mask * self.time_mask[t,:,tf.newaxis]
 
-
 				if par['use_striatum']:
-					# needs fixing
-					pass
-					#self.write_striatum(mask*y, action, reward_matrix)
+					rpe = reward + par['discount_rate'] * val_out - val_out_prev
+					self.write_striatum(state, action, rpe)
 
 				self.reward_full.append(reward)
+				val_out_prev = val_out
 
 				# Record outputs
 				if i >= par['dead_trials']:
@@ -193,7 +196,6 @@ class Model:
 
 		# h1 and h2 are associated with positive and negative RPEs, respectively
 
-
 		h1 = tf.einsum('bi,bij->bj', striatal_input, self.H1)
 		top_k, _ = tf.nn.top_k(h1, k = par['striatum_top_k']+1)
 		h1 = tf.where(h1 >= top_k[:,-2:-1], h1, tf.zeros(h1.shape))
@@ -208,12 +210,57 @@ class Model:
 
 		return tf.concat([a1, a2], axis = 1)
 
+	def striatum_call(self, state, action, Hs, Ha):
 
-	def write_striatum(self, h, a, r):
+		x1 = tf.einsum('bi,bij->bj', state, Hs)
+		x2 = tf.einsum('bi,bij->bj', action, Ha)
+		h = tf.nn.relu(x1) * tf.nn.relu(x2)
+		top_k, _ = tf.nn.top_k(h, k = par['striatum_top_k']+1)
+		h_index = tf.where(h >= top_k[:,-2:-1], tf.ones(h.shape), tf.zeros(h.shape))
+
+		return h*h_index, h_index
+
+
+	def read_striatum_loop(self, state):
+		# loop across all actions and input them into striatum along with state
+
+		y = []
+		for i in range(par['n_output']):
+			action = tf.constant(par['action_vectors'][i])
+			action = tf.tile(tf.reshape(action, (1, -1)), (par['batch_size'], 1))
+			h1, _ = self.striatum_call(state, action, self.Hs1, self.Ha1)
+			h2, _ = self.striatum_call(state, action, self.Hs2, self.Ha2)
+			y.append(tf.reduce_sum(h1, axis = 1))
+			y.append(tf.reduce_sum(h2, axis = 1))
+
+		return tf.stack(y, axis = 1)
+
+
+	def write_striatum(self, state, action, rpe):
+
+		alpha = 0.25
 
 		# NEEDS MAJOR UPDATE!!!!
+		h1, h1_index = self.striatum_call(state, action, self.Hs1, self.Ha1)
+		h2, h2_index = self.striatum_call(state, action, self.Hs2, self.Ha2)
 
-		self.A = self.A + tf.einsum('im,ijk->ijkm', r, tf.einsum('ij,ik->ijk', h, a))
+		rpe_pos = tf.where(rpe > par['rpe_th'], rpe, tf.zeros(rpe.shape))
+		rpe_neg = tf.where(rpe < -par['rpe_th'], -rpe, tf.zeros(rpe.shape))
+
+		self.Hs1 += alpha * tf.einsum('bi,bj->bij',state, rpe_pos * h1_index)
+		self.Hs2 += alpha * tf.einsum('bi,bj->bij',state, rpe_neg * h2_index)
+		self.Ha1 += alpha * tf.einsum('bi,bj->bij',action, rpe_pos * h1_index)
+		self.Ha2 += alpha * tf.einsum('bi,bj->bij',action, rpe_neg * h2_index)
+
+		self.Hs1 /= (tf.sqrt(1e-9 + tf.reduce_sum(self.Hs1**2, axis = 1, keepdims = True)))
+		self.Hs2 /= (tf.sqrt(1e-9 + tf.reduce_sum(self.Hs2**2, axis = 1, keepdims = True)))
+		self.Ha1 /= (tf.sqrt(1e-9 + tf.reduce_sum(self.Ha1**2, axis = 1, keepdims = True)))
+		self.Ha2 /= (tf.sqrt(1e-9 + tf.reduce_sum(self.Ha2**2, axis = 1, keepdims = True)))
+
+		#self.Hs1 -= tf.einsum('bi,bj->bij',state, rpe_pos * (1 - h1_index))
+		#self.Hs2 -= tf.einsum('bi,bj->bij',state, rpe_neg * (1 - h2_index))
+		#self.Ha1 -= tf.einsum('bi,bj->bij',action, rpe_pos * (1 - h1_index))
+		#self.Ha2 -= tf.einsum('bi,bj->bij',action, rpe_neg * (1 - h2_index))
 
 
 	def read_hopfield_weights(self, H, h):

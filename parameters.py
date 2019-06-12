@@ -23,7 +23,7 @@ par = {
 	'num_rule_tuned'		: 0,
 	'n_hidden'				: 256,
 	'n_lstm_out'			: 64,
-	'n_striatum'			: 256,
+	'n_striatum'			: 200,
 	'striatum_top_k'		: 1,
 	'n_val'					: 1,
 	'use_striatum'			: True,
@@ -31,7 +31,7 @@ par = {
 
 	# Timings and rates
 	'learning_rate'			: 1e-3,
-	'drop_rate'				: 0.2,
+	'drop_rate'				: 0.,
 	'grad_clip_val'			: 5,
 
 	# Variance values
@@ -45,14 +45,14 @@ par = {
 	'mask_duration'			: 0,
 	'dead_time'				: 100,
 	'dt'					: 100,
-	'trials_per_seq'		: 20,
+	'trials_per_seq'		: 30,
 	'train_task_list'		: [a for a in range(1,61)],
 	'test_task_list'		: [0],
-	'dead_trials'			: 10,
+	'dead_trials'			: 20,
 
 	# RL parameters
 	'fix_break_penalty'     : -1.,
-	'wrong_choice_penalty'  : -0.01,
+	'wrong_choice_penalty'  : -0.1,
 	'correct_choice_reward' : 1.,
 	'discount_rate'         : 0.9,
 	'n_unique_vals'			: 4,
@@ -66,8 +66,12 @@ par = {
 	'val_cost'              : 0.01,
 
 	# Training specs
-	'batch_size'			: 180,
+	'batch_size'			: 64,
 	'n_iters'				: 25000000,		# 1500 to train straight cortex
+
+	# Striatum parameters
+	'rpe_th'				: 0.05,
+	'striatum_input'		: 'stim_and_state'
 }
 
 
@@ -134,6 +138,15 @@ def update_dependencies():
 	# Set trial step length
 	par['num_time_steps'] = par['trial_length']//par['dt']
 
+	par['action_vectors'] = np.eye((par['n_output']), dtype = np.float32)
+	par['action_vectors'] = np.vsplit(par['action_vectors'], par['n_output'])
+
+	if par['striatum_input'] == 'stim_and_state':
+		par['n_striatum_in'] = par['n_hidden'] + par['n_input']
+	elif par['striatum_input'] == 'state_only':
+		par['n_striatum_in'] = par['n_hidden']
+	elif par['striatum_input'] == 'stim_only':
+		par['n_striatum_in'] = par['n_input']
 
 update_dependencies()
 print('--> Parameters successfully loaded.\n')
