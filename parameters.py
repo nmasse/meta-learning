@@ -11,14 +11,11 @@ print('\n--> Loading parameters...')
 
 par = {
 	# Setup parameters
-	'savedir'				: './savedir/',
-	'save_fn'				: '80_tasks_v0',
+	'save_fn'				: './savedir/test_results',
 	'train'					: True,
 	'save_weights'			: True,
 	'load_weights'			: False,
-	'learning_method'		: 'RL', # 'RL' or 'SL'
-	'LSTM_init'				: 0.02,
-	'w_init'				: 0.02,
+
 
 	# Network shape
 	'num_motion_tuned'		: 32,
@@ -29,7 +26,6 @@ par = {
 	'n_striatum'			: 256,
 	'striatum_top_k'		: 1,
 	'n_val'					: 1,
-	'top_down'				: True,
 	'use_striatum'			: True,
 
 
@@ -42,7 +38,6 @@ par = {
 	'input_mean'			: 0.0,
 	'noise_in'				: 0.,
 	'noise_rnn'				: 0.0,
-	'n_filters'				: 1,
 
 	# Task specs
 	'task'					: 'multistim',
@@ -50,16 +45,16 @@ par = {
 	'mask_duration'			: 0,
 	'dead_time'				: 100,
 	'dt'					: 100,
-	'trials_per_seq'		: 5,
+	'trials_per_seq'		: 20,
 	'train_task_list'		: [a for a in range(1,61)],
 	'test_task_list'		: [0],
-	'dead_trials'			: 2,
+	'dead_trials'			: 10,
 
 	# RL parameters
 	'fix_break_penalty'     : -1.,
 	'wrong_choice_penalty'  : -0.01,
 	'correct_choice_reward' : 1.,
-	'discount_rate'         : 0.,
+	'discount_rate'         : 0.9,
 	'n_unique_vals'			: 4,
 
 	# Tuning function data
@@ -67,19 +62,12 @@ par = {
 	'tuning_height'			: 1.0,
 
 	# Cost values
-	'sparsity_cost'         : 5e-2, # was 5e-5
-	'rec_cost'				: 1.,  # was 1e-2
-	'weight_cost'           : 1e-9,  # was 1e-9
 	'entropy_cost'          : 0.01,
 	'val_cost'              : 0.01,
 
 	# Training specs
 	'batch_size'			: 180,
 	'n_iters'				: 25000000,		# 1500 to train straight cortex
-
-	'load_encoder'			: True,
-	'train_encoder'			: False,
-
 }
 
 
@@ -100,16 +88,6 @@ def update_parameters(updates, verbose=True, update_deps=True):
 	if update_deps:
 		update_dependencies()
 
-
-
-def load_encoder_weights():
-
-	fn = './savedir/80_tasks_v0_model_weights.pkl'
-	results = pickle.load(open(fn, 'rb'))
-	print('Weight keys ', results['weights'].keys())
-	par['W0_init'] = results['weights']['W0']
-	par['W1_init'] = results['weights']['W1']
-	par['b0_init'] = results['weights']['b0']
 
 def load_all_weights():
 
