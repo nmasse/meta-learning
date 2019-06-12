@@ -26,20 +26,18 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
 
 class Model:
 
-	def __init__(self, stimulus, reward_data, reward_matrix, mask):
+	def __init__(self, stimulus, reward_data, mask):
 
 		print('Defining graph...')
 
 		self.stimulus_data	= stimulus
 		self.reward_data	= reward_data
-		self.reward_matrix	= reward_matrix
 		self.time_mask		= mask
 
 		self.var_dict = {}
 		self.prev_weights = pickle.load(open(par['saved_weights_fn'],'rb')) if par['load_weights'] else None
 
 		self.run_model()
-		self.run_A_model()
 		self.optimize()
 
 		print('Graph successfully defined.')
@@ -74,8 +72,6 @@ class Model:
 
 		self.h = []
 		self.y = []
-		self.h_write = []
-		self.c = []
 		self.stim = []
 		self.stim_hat = []
 		self.pol_out = []
@@ -92,7 +88,7 @@ class Model:
 		# lstm output that will project into striatum
 		lstm_output = tf.zeros([par['batch_size'], par['n_lstm_out']], dtype = tf.float32)
 
-		# striatal weights
+		# striatal weights, H1 and H2 are associated with positive and negative RPEs, respectively
 		self.H1  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
 		self.H2  = tf.zeros([par['batch_size'], par['n_lstm_out'] + par['n_input'], par['n_striatum']], dtype = tf.float32)
 		self.Hf1 = tf.zeros([par['batch_size'], par['n_striatum'], par['n_output']], dtype = tf.float32)
@@ -122,6 +118,7 @@ class Model:
 				h, c = self.run_lstm(lstm_input, h, c)
 				h = tf.layers.dropout(h, rate = par['drop_rate'], training = True)
 
+				# inetermediate projection between lstm and striatum
 				lstm_output = tf.nn.relu(self.multiply(h, par['n_lstm_out'], 'Wl') + \
 					self.add_bias(par['n_lstm_out'], 'bl'))
 
@@ -138,14 +135,15 @@ class Model:
 				if j == 0:
 					continue_trial = tf.ones([par['batch_size'], 1])
 				else:
-					continue_trial= tf.cast(tf.equal(reward, 0.), tf.float32)
+					continue_trial = tf.cast(tf.equal(reward, 0.), tf.float32)
+
 				mask 		   *= continue_trial
 				reward			= tf.reduce_sum(action*self.reward_data[t,...], axis=-1, keep_dims=True) \
 									* mask * self.time_mask[t,:,tf.newaxis]
-				reward_matrix	= tf.reduce_sum(action[...,tf.newaxis]*self.reward_matrix[t,...], axis=-2, keep_dims=False) \
-									* mask * self.time_mask[t,:,tf.newaxis]
+
 
 				if par['use_striatum']:
+					# needs fixing
 					self.write_striatum(mask*y, action, reward_matrix)
 
 				self.reward_full.append(reward)
@@ -196,6 +194,7 @@ class Model:
 		h1 = striatal_input @ self.H1
 		top_k, _ = tf.nn.top_k(h1, k = par['striatum_top_k'])
 		h1 = tf.where(h1 >= top_k[:,-par['striatum_top_k']-1:-par['striatum_top_k']], h1, tf.zeros(h1.shape))
+		#h1 = tf.where(h1 >= top_k[:,0:1], h1, tf.zeros(h1.shape))
 
 		h2 = striatal_input @ self.H2
 		top_k, _ = tf.nn.top_k(h2, k = par['striatum_top_k'])
@@ -298,21 +297,19 @@ def main(gpu_id=None):
 	tf.reset_default_graph()
 	x = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_input']], 'stim')
 	r = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_output']], 'reward')
-	rm = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_output'], par['num_reward_types']], 'reward_matrix')
 	m = tf.placeholder(tf.float32, [par['num_time_steps']*par['trials_per_seq'], par['batch_size']], 'mask')
 
-	stim = stimulus_sequence.Stimulus()
+	stim = stimulus.Stimulus()
 
-	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.45)# if gpu_id == '0' else tf.GPUOptions()
+	gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)# if gpu_id == '0' else tf.GPUOptions()
 
 	results_dict = {'reward_list': [], 'novel_reward_list':[]}
-	t0 = time.time()
 
 	with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
 
 		device = '/cpu:0' if gpu_id is None else '/gpu:0'
 		with tf.device(device):
-			model = Model(x, r, rm, m)
+			model = Model(x, r, m)
 
 		sess.run(tf.global_variables_initializer())
 		reward_list = []
@@ -322,15 +319,14 @@ def main(gpu_id=None):
 			name, trial_info = stim.generate_trial(test_tasks = False)
 			_, reward, pol_loss, action, h, mask  = \
 				sess.run([model.train, model.reward_full, model.pol_loss, model.action, model.h, model.mask], \
-				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],\
-				rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
+				feed_dict={x:trial_info['neural_input'], r:trial_info['reward_data'],m:trial_info['train_mask']})
 			results_dict['reward_list'].append(reshape_reward(reward_novel))
 
 			if i%100 == 0:
 
 				name, trial_info = stim.generate_trial(test_tasks = True)
 				reward_novel = sess.run(model.reward_full, feed_dict={x:trial_info['neural_input'], \
-					r:trial_info['reward_data'],rm:trial_info['reward_matrix'], m:trial_info['train_mask']})
+					r:trial_info['reward_data'], m:trial_info['train_mask']})
 				results_dict['novel_reward_list'].append(reshape_reward(reward_novel))
 
 				print('Iter {:>4} | Reward: {:6.3f} | Reward novel: {:6.3f} | Pol. Loss: {:6.3f}'.format(\
@@ -349,9 +345,9 @@ def reshape_reward(reward):
 
 def print_key_params():
 
-	key_params = ['n_hidden', 'l2l', 'feed_sparse', 'learning_rate', 'discount_rate', 'drop_rate',\
-		'entropy_cost', 'val_cost', 'trials_per_seq', 'dead_trials','batch_size','task_list',\
-		'load_encoder', 'train_encoder', 'grad_clip_val']
+	key_params = ['n_hidden', 'use_striatum',  'learning_rate', 'discount_rate', 'drop_rate',\
+		'entropy_cost', 'val_cost', 'trials_per_seq', 'dead_trials','batch_size','training_task_list',\
+		'est_task_list', 'grad_clip_val']
 
 	print('Key Parameters:\n'+'-'*60)
 	for k in key_params:

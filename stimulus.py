@@ -12,7 +12,7 @@ class Stimulus:
 
 		# Stimulus shapes
 		self.input_shape    = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_input'] ]
-		self.output_shape   = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_pol'] ]
+		self.output_shape   = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['n_output'] ]
 		self.stimulus_shape = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['num_motion_tuned'] ]
 		self.response_shape = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['num_motion_dirs'] ]
 		self.fixation_shape = [par['num_time_steps']*par['trials_per_seq'], par['batch_size'], par['num_fix_tuned'] ]

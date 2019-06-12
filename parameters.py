@@ -29,9 +29,8 @@ par = {
 	'striatum_top_k'		: 1,
 	'n_val'					: 1,
 	'top_down'				: True,
-	'l2l'					: True,
+	'use_striatum'			: True,
 	'feed_sparse'			: False,
-
 
 	# Encoder configuration
 	'n_latent'				: 200,
